@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+        <!-- 🔔 Android 13以降で必要な通知権限 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
     <application
         android:label="simplenotification"
         android:name="${applicationName}"
