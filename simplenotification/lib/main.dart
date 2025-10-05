@@ -2,13 +2,47 @@ import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
+import 'package:flutter_native_timezone/flutter_native_timezone.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
+import 'package:flutter/services.dart';
+
+class AlarmPermission {
+  static const platform = MethodChannel('com.example.simplenotification/alarm');
+
+  static Future<bool> areExactAlarmsAllowed() async {
+    try {
+      final allowed =
+          await platform.invokeMethod<bool>('areExactAlarmsAllowed');
+      return allowed ?? false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<void> scheduleExactAlarm(
+      int id, DateTime dateTime, String title, String text) async {
+    try {
+      await platform.invokeMethod('scheduleExactAlarm', {
+        'id': id,
+        'timeMillis': dateTime.millisecondsSinceEpoch,
+        'title': title,
+        'text': text,
+      });
+    } catch (e) {
+      print('Failed to schedule exact alarm: $e');
+    }
+  }
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   tz.initializeTimeZones();
+  final String timeZoneName = await FlutterNativeTimezone.getLocalTimezone();
+  tz.setLocalLocation(tz.getLocation(timeZoneName));
+  debugPrint('Local timezone set to: $timeZoneName');
+
   runApp(const SimpleNotificationApp());
 }
 
@@ -65,12 +99,35 @@ class _TaskListPageState extends State<TaskListPage> {
   Future<void> _initNotifications() async {
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     const initSettings = InitializationSettings(android: android);
-    await _notificationsPlugin.initialize(initSettings);
 
-    // 🔔 Android 13以降では通知権限が必要
+    await _notificationsPlugin.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: (response) {
+        debugPrint('Notification tapped: ${response.payload}');
+      },
+    );
+
+    // Android 13 以上では通知権限が必要
     if (await Permission.notification.isDenied) {
       await Permission.notification.request();
     }
+
+    // 通知チャンネル作成（Android 8.0以上必須）
+    const androidChannel = AndroidNotificationChannel(
+      'daily_channel',
+      'Daily Notifications',
+      description: '毎日指定時刻に通知',
+      importance: Importance.max,
+    );
+
+    final androidPlugin =
+        _notificationsPlugin.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+
+    await androidPlugin?.createNotificationChannel(androidChannel);
+    debugPrint('Notification channel created');
+
+    debugPrint('Local timezone set to: ${tz.local.name}');
   }
 
   Future<void> _loadTasks() async {
@@ -110,9 +167,7 @@ class _TaskListPageState extends State<TaskListPage> {
                 final now = TimeOfDay.now();
                 final picked =
                     await showTimePicker(context: context, initialTime: now);
-                if (picked != null) {
-                  selectedTime = picked;
-                }
+                if (picked != null) selectedTime = picked;
               },
               child: const Text('通知時刻を設定'),
             ),
@@ -126,7 +181,6 @@ class _TaskListPageState extends State<TaskListPage> {
           ElevatedButton(
             onPressed: () async {
               if (nameController.text.isNotEmpty && selectedTime != null) {
-                // 権限チェック
                 final status = await Permission.notification.status;
                 if (!status.isGranted) {
                   final result = await Permission.notification.request();
@@ -157,6 +211,11 @@ class _TaskListPageState extends State<TaskListPage> {
 
   Future<void> _scheduleDailyNotification(
       int id, String title, TimeOfDay time) async {
+    final exactAllowed = await AlarmPermission.areExactAlarmsAllowed();
+    if (!exactAllowed) {
+      debugPrint('Exact alarms NOT allowed. 通知が正確に動作しない可能性があります');
+    }
+
     final now = tz.TZDateTime.now(tz.local);
     var scheduled = tz.TZDateTime(
       tz.local,
@@ -166,16 +225,17 @@ class _TaskListPageState extends State<TaskListPage> {
       time.hour,
       time.minute,
     );
-    if (scheduled.isBefore(now)) {
+    if (scheduled.isBefore(now))
       scheduled = scheduled.add(const Duration(days: 1));
-    }
 
     const androidDetails = AndroidNotificationDetails(
       'daily_channel',
       'Daily Notifications',
       channelDescription: '毎日指定時刻に通知',
-      importance: Importance.high,
+      importance: Importance.max,
       priority: Priority.high,
+      playSound: true,
+      enableVibration: true,
     );
     const details = NotificationDetails(android: androidDetails);
 
@@ -188,37 +248,57 @@ class _TaskListPageState extends State<TaskListPage> {
       androidAllowWhileIdle: true,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
-      matchDateTimeComponents: DateTimeComponents.time, // 毎日繰り返し
+      matchDateTimeComponents: DateTimeComponents.time,
     );
+    debugPrint('Scheduled daily notification at $scheduled');
+  }
+
+  // 🔹 テスト通知（10秒後）
+  Future<void> _testNotification() async {
+    // Exact Alarm 権限チェック
+    final exactAllowed = await AlarmPermission.areExactAlarmsAllowed();
+    if (!exactAllowed) {
+      debugPrint('Exact alarms NOT allowed. スケジュール通知は不正確になる可能性があります');
+    }
+
+    final now = tz.TZDateTime.now(tz.local);
+    final scheduled = now.add(const Duration(seconds: 10));
+
+    debugPrint('Now: $now');
+    debugPrint('Scheduled: $scheduled');
+
+    // 🔹 即時通知（デバッグ用）
+    const androidDetails = AndroidNotificationDetails(
+      'daily_channel',
+      'Daily Notifications',
+      channelDescription: '今すぐ通知テストです',
+      importance: Importance.max,
+      priority: Priority.high,
+      playSound: true,
+      enableVibration: true,
+    );
+    const details = NotificationDetails(android: androidDetails);
+
+    await _notificationsPlugin.show(
+      9998,
+      '即時通知',
+      '今すぐ通知テストです',
+      details,
+    );
+
+    // 🔹 10秒後に正確通知（AlarmManager を使う）
+    await AlarmPermission.scheduleExactAlarm(
+      9999,
+      scheduled,
+      'スケジュール通知',
+      '10秒後の通知テストです',
+    );
+
+    debugPrint('[TestNotification] Exact alarm scheduled successfully');
   }
 
   Future<void> _cancelNotification(int id) async {
     await _notificationsPlugin.cancel(id);
-  }
-
-  Future<void> _testNotification() async {
-    final now = tz.TZDateTime.now(tz.local);
-    final scheduled = now.add(const Duration(seconds: 5));
-
-    const androidDetails = AndroidNotificationDetails(
-      'daily_channel',
-      'Daily Notifications',
-      channelDescription: '5秒後にテスト通知を送信',
-      importance: Importance.high,
-      priority: Priority.high,
-    );
-    const details = NotificationDetails(android: androidDetails);
-
-    await _notificationsPlugin.zonedSchedule(
-      9999, // ← 適当なID（他と重複しないように）
-      'テスト通知',
-      '5秒後の通知テストです',
-      scheduled,
-      details,
-      androidAllowWhileIdle: true,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
-    );
   }
 
   @override
@@ -250,15 +330,13 @@ class _TaskListPageState extends State<TaskListPage> {
           );
         },
       ),
-
-      // ✅ テスト通知ボタン＋追加ボタンの2段構成
       floatingActionButton: Column(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           FloatingActionButton(
             heroTag: 'test',
             onPressed: _testNotification,
-            tooltip: '5秒後に通知テスト',
+            tooltip: 'テスト通知（10秒後）',
             backgroundColor: Colors.orange,
             child: const Icon(Icons.notifications_active),
           ),

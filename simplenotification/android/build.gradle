@@ -18,14 +18,30 @@ allprojects {
     }
 }
 
+// ビルドディレクトリの設定
 rootProject.buildDir = '../build'
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
 }
+
+// サブプロジェクトが app に依存するように設定
 subprojects {
     project.evaluationDependsOn(':app')
 }
 
+// ✅ Kotlin バージョンを強制上書き
+subprojects {
+    project.buildscript.repositories {
+        google()
+        mavenCentral()
+    }
+
+    project.buildscript.dependencies {
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+// clean タスク
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }
