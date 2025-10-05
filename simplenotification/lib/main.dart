@@ -228,7 +228,7 @@ class _TaskListPageState extends State<TaskListPage> {
     if (scheduled.isBefore(now))
       scheduled = scheduled.add(const Duration(days: 1));
 
-    const androidDetails = AndroidNotificationDetails(
+    final androidDetails = AndroidNotificationDetails(
       'daily_channel',
       'Daily Notifications',
       channelDescription: '毎日指定時刻に通知',
@@ -237,20 +237,22 @@ class _TaskListPageState extends State<TaskListPage> {
       playSound: true,
       enableVibration: true,
     );
-    const details = NotificationDetails(android: androidDetails);
+    final details = NotificationDetails(android: androidDetails);
 
-    await _notificationsPlugin.zonedSchedule(
-      id,
-      'タスク通知',
-      title,
-      scheduled,
-      details,
-      androidAllowWhileIdle: true,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
-      matchDateTimeComponents: DateTimeComponents.time,
-    );
-    debugPrint('Scheduled daily notification at $scheduled');
+    // 🔹 ここから AlarmManager 経由で正確に通知
+    final androidPlugin =
+        _notificationsPlugin.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+
+    if (androidPlugin != null && exactAllowed) {
+      await AlarmPermission.scheduleExactAlarm(
+        id,
+        scheduled,
+        'タスク通知',
+        title,
+      );
+      debugPrint('Scheduled daily notification at $scheduled via AlarmManager');
+    }
   }
 
   // 🔹 テスト通知（10秒後）
